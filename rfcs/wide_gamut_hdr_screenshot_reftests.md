@@ -1,4 +1,4 @@
-# RFC ##: Wide-Gamut and HDR Screenshot Reftests
+# RFC 242: Wide-Gamut and HDR Screenshot Reftests
 
 ## Summary
 
