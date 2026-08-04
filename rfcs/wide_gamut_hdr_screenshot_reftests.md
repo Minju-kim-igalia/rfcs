@@ -24,7 +24,7 @@ A reftest opts in by declaring the requested output color space on the root test
 <meta name="reftest-color-space" content="display-p3">
 ```
 
-The value uses the identifier defined by WebDriver BiDi. WPT does not define aliases or separate color-space semantics. Expected identifiers include `srgb`, `display-p3`, `rec2020`, an Adobe RGB-compatible identifier if one is standardized, and `rec2100-pq` and `rec2100-hlg`.
+The value uses the identifier defined by WebDriver BiDi. WPT does not define aliases or separate color-space semantics. Expected identifiers include `srgb`, `display-p3`, `rec2020`, an identifier for Adobe RGB (1998), such as `a98-rgb`, if standardized by WebDriver BiDi, and `rec2100-pq` and `rec2100-hlg`.
 
 The metadata is valid only on the root test and applies to every match and mismatch reference in its reference graph. Reference files do not override the root request. This allows the same reference file to be reused by tests that request different output color spaces.
 
