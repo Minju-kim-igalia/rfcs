@@ -12,7 +12,7 @@ The protocol extensions for classic WebDriver and WebDriver BiDi are outside the
 
 The current WebDriver screenshot path is effectively limited to sRGB SDR. An sRGB-only capture can hide a rendering bug: if the test is incorrectly clamped to sRGB and the reference is also converted to sRGB during capture, the two can compare equal. For HDR, tone mapping or clamping to SDR removes the values under test entirely.
 
-JPEG XL is the first concrete consumer. The expected wide-gamut SDR targets are Adobe RGB, Display-P3, and Rec.2020; the first HDR targets are PQ and HLG. Gain maps are a later target while encoder support remains limited. References must also exercise values outside sRGB or SDR, since capturing an sRGB-only reference into a wider output space does not validate wide-gamut or HDR rendering. JPEG XL decoding is not necessarily bit-exact, so some tests will also need tightly bounded fuzzy comparison.
+JPEG XL is the first concrete consumer. The tests to automate cover wide-gamut SDR content in Adobe RGB, Display-P3, and Rec.2020, and HDR content in PQ and HLG. Gain maps remain a follow-up testing target. References must also exercise values outside sRGB or SDR, since capturing an sRGB-only reference into a wider output space does not validate wide-gamut or HDR rendering. JPEG XL decoding is not necessarily bit-exact, so some tests will also need tightly bounded fuzzy comparison. The proposed comparison rules are not specific to JPEG XL.
 
 ## Details
 
@@ -50,13 +50,44 @@ For future `rec2100-pq` screenshots, the capture contract must map SDR reference
 
 The runner reports `ERROR` when the required rendering or capture mode is unavailable, a request is rejected, a fallback is explicitly reported, or a PNG does not satisfy the capture contract. For these capture errors, it logs the cause and does not compare the images. Valid captures use the normal match or mismatch comparison to determine `PASS` or `FAIL`. Incorrect rendering is not reclassified as unsupported.
 
+Future gain-map tests require defined rendering conditions, including the target HDR headroom used when applying the gain map. The test and all references must use the same target headroom. Choosing a PNG color space or a PQ reference white does not set this condition. An SDR gain-map test would use a linear headroom of 1 (0 stops) when applying the gain map, not merely convert a later HDR result to SDR. The capture contract must define how the required condition is established before those tests are enabled. This may use capture settings or a defined mechanism in the test and reference pages.
+
 ### Comparison and `wptrunner`
 
 The test and reference PNGs are validated and decoded using the same capture contract. Decoding preserves the stored samples and does not convert them to sRGB, reduce their bit depth, gamut-map them, or tone-map them. Comparison uses decoded channel values rather than encoded PNG bytes, since different PNG encodings can represent the same samples.
 
-Exact comparison is sufficient for synthetic fixtures and deterministic paths. Existing fuzzy semantics can continue to apply to compatible 8-bit samples. Higher-precision samples need follow-up work to define the comparison domain, tolerance units, alpha handling, and the mapping from existing `maxDifference` and pixel-count values. Until then, higher-precision tests use exact comparison, and JPEG XL tests that require a tolerance remain manual.
+Exact comparison is sufficient for synthetic fixtures and deterministic paths. For opted-in tests, this RFC proposes the following fuzzy comparison for full-range integer RGB or RGBA samples. Both captures must satisfy the same color-space and bit-depth requirements. The initial comparison uses the same viewport, device scale, and capture rectangle for the test and reference. Both PNGs must have the pixel dimensions required by those settings. Unexpected or differing dimensions are capture errors, reported as `ERROR`, and cannot satisfy a mismatch reference.
 
-`wptrunner` passes the resolved request to the executor and preserves the original PNG for validation and diagnostics. The requested color space is part of the screenshot cache key so captures of the same URL in different color spaces do not collide. A vendor runner may use a different capture path as long as it produces output satisfying the same capture contract and compares the same decoded samples.
+At each pixel, divide the largest absolute RGB channel difference by `2^b - 1`, where `b` is the bit depth. Compare the largest value across the image with `maxChannelDifference`. Count each pixel where any compared RGB channel differs once, before applying the tolerance, and compare that count with `maxDifferentPixels`. One sample step is `1/255` for 8-bit samples and `1/65535` for 16-bit samples. These units do not reduce the stored precision or convert the colors.
+
+Alpha must match exactly. Treat a missing alpha channel as fully opaque. Ignore RGB only where both alpha values are zero. Otherwise, compare the stored RGB without multiplying it by alpha. An alpha difference makes the images unequal regardless of the RGB tolerance.
+
+This RFC proposes extending the existing `fuzzy` annotation with new keys for opted-in comparisons:
+
+```html
+<meta name="fuzzy"
+      content="maxChannelDifference=2/255;maxDifferentPixels=100">
+```
+
+The two new keys must appear together and specify inclusive upper limits. Both new keys must be named explicitly. Unnamed values are allowed only in the existing format. The existing fuzzy format uses ranges; the new keys use upper limits only. For a match comparison, a smaller difference is acceptable, including an exact match. The example illustrates syntax, not recommended tolerances. Each entry uses either the existing format or the new keys, never a mixture.
+
+`maxChannelDifference` accepts a value from 0 to 1, written as a finite decimal without an exponent or as `p/q`, where `p` is a nonnegative integer and `q` is a positive integer. For example, `2/255` allows two steps in an 8-bit sample. Interpret both forms exactly, without rounding to binary floating point. Express a decimal as an exact fraction. For a threshold `p/q`, the largest integer channel difference `d` is allowed when `d * q <= p * (2^b - 1)`. `maxDifferentPixels` is a nonnegative integer.
+
+Use the annotation on the page that owns the reference link. An optional reference URL followed by a colon selects a particular reference and takes precedence over a general annotation. Each metadata source may provide only one applicable entry per selector. Mixed old and new keys, duplicate or unknown keys, and invalid values are authoring errors.
+
+Vendors use the existing `fuzzy` property in the root test's `.ini` metadata. The new format uses the same two keys and units as HTML and retains the existing reference and comparison-pair selectors. Evaluate `.ini` conditions before selecting an entry. Within `.ini`, a comparison-pair entry takes precedence over a reference entry, which takes precedence over a general entry. An applicable `.ini` entry takes precedence over HTML. Select the entry in this order before checking its format, and take both limits from that entry.
+
+For a comparison whose root declares `reftest-color-space`, the selected entry must use the new keys. A selected entry in the existing format is a metadata error; do not skip it to use a lower-priority entry or reinterpret its values. Comparisons without `reftest-color-space` keep the existing format and behavior. Selecting an entry with the new keys for such a comparison is a metadata error. If no entry applies to an opted-in comparison, both limits are zero.
+
+Shared reference pages with their own fuzzy settings may need different formats depending on the root test. This proposal does not allow both formats for the same selector on one page. The selected format is checked against the root's comparison mode, and an incompatible format is reported as a metadata error. Authors can use separate reference pages when both formats are needed.
+
+WPT lint checks HTML annotation syntax and reports entries in the existing format in a root that declares `reftest-color-space`. The runner validates `.ini` entries when loading and evaluating metadata, and checks the selected format against the root's comparison mode. Invalid selected entries must not fall back to another source or to exact comparison. Report a test-specific metadata error as `ERROR`; a file-level parse error remains a metadata loading error.
+
+After validating capture dimensions, the images count as equal when alpha matches and neither limit is exceeded. If all RGB values are ignored, both measurements are zero. A match reference requires the images to be equal under these rules. A mismatch reference requires them to be unequal. These are numeric, not perceptual, differences. Tolerances must be justified for each test and output. An sRGB tolerance is not automatically suitable for P3 or PQ, and a PQ sample difference is not a fixed difference in nits. The metric and alpha policy need validation with fixtures before use. Tests needing an alpha tolerance or another metric require further comparison work. Gain-map tests may need a comparison metric other than the maximum channel difference and pixel count proposed here.
+
+Fuzzy comparison does not define which tone-mapping results are correct. Where the rendering rules allow different tone-mapping choices, tests must not require one implementation's current curve. A tolerance must not be chosen only because it makes current browser outputs pass. If no reference and tolerance can be justified, another automated assertion may be used if it also respects the allowed tone-mapping choices. If neither approach gives a useful test without restricting those choices, the case remains manual.
+
+`wptrunner` passes the resolved request to the executor and preserves the original PNG for validation and diagnostics. The requested color space is part of the screenshot cache key so captures of the same URL in different color spaces do not collide. Any other rendering conditions that affect the capture, including target headroom when supported, must also be part of that key. A vendor runner may use a different capture path as long as it produces output satisfying the same capture contract and compares the same decoded samples.
 
 On a rendering mismatch or invalid capture, the runner keeps the available original PNGs as artifacts. A derived sRGB or tone-mapped preview may be provided for debugging, but it is not used for comparison.
 
@@ -68,7 +99,7 @@ On a rendering mismatch or invalid capture, the runner keeps the available origi
 - **Fuzzy comparison.** Exact comparison is likely too strict for broad JPEG XL coverage, but an underspecified higher-precision tolerance would produce inconsistent results across runners.
 - **Reference quality.** A reference containing only sRGB or SDR values makes an opted-in test ineffective.
 - **Cost and debugging.** Higher-bit-depth PNGs require more storage and decode time and may not display correctly in ordinary image viewers. Capture paths that require new launch settings also incur the cost of restarting the browser when those settings change.
-- **Downstream consumers.** Vendor harnesses, dashboards, and artifact systems need to handle the new metadata, capture errors, and image artifacts.
+- **Downstream consumers.** Vendor harnesses, dashboards, and artifact systems need to handle the new metadata, capture errors, and image artifacts. A harness that ignores `reftest-color-space` may compare sRGB captures and report a false pass. A harness that parses `fuzzy` itself needs to handle the new keys.
 
 ## References
 
